@@ -1,0 +1,71 @@
+Lidando com erros retornados pela API gRPC:
+
+Nosso cliente vai ser muito parecido com o cliente criado no projeto fretes-rest, a diferença é que agora o servidor pode retornar erros e caso isso ocorra vamos querer capturar as mengagens de erros. Para isso, ao executar uma função de nosso client, essa deverá ser dentro do block try{} e no catch{} vamos capturar uma Exception. Dentro do catch{} vamos capturar o status, o code e a description dessa Exception e através desse code vamos lançar uma HttpStatusExcpetion equivalente. Esse site ajuda a achar o HttpStatusExcpetion equivalente: https://cloud.google.com/apis/design/errors
+
+Obs: Como algumas mensagens de erros podem ter detalhes a mais (objetos) é recomendável verificar se está vindo na mensagem de erro um StatusProto (mensagem a mais - Objeto), caso esteja vindo, vamos pegar esse objeto, extrair seus dados e colocar na resposta para o usuário.
+
+Siga o passo a passo:
+
+1) Vamos copiar o arquivo .proto do projeto fretes-2 e colar nesse nosso projeto (fretes-rest-2);
+
+2) Agora na classe CalculadoraDeFreteController vamos colocar dentro de um try{} o trecho: 
+	val response = gRpcClient.calculaFrete(request)
+
+Pois agora o servidor pode nos devolver um erro!
+
+3) E dentro do block catch{} vamos pegar o erro da resposta do cliente, ver qual erro é e devolver um erro de http equivalente. Lembre-se que em alguns erros há mais informações, então é sempre bom verificar se está vindo algo a mais na mensagem de erro. Veja como ficou:
+
+ @Get("/api/fretes")
+    fun calcula(@QueryValue(defaultValue = "") cep: String): FreteDto {
+
+        val request = FreteRequest.newBuilder()
+            .setCep(cep)
+            .build()
+
+        try {
+            val response = gRpcClient.calculaFrete(request)
+            return FreteDto(response.cep, response.valor)
+        } catch (e: StatusRuntimeException) {
+
+            //Pegando a descrição do erro que chegou;
+            val description = e.status.description
+
+            //Pegando o status do erro que chegou;
+            val statusCode = e.status.code
+
+            //Verificando se o erro que aconteceu foi INVALID_ARGUMENT (Verifificamos pelo CODE)
+            if (statusCode == Status.Code.INVALID_ARGUMENT) {
+                //Se ocorreu erro do tipo INVALID_ARGUMENT vamos retornar bad request para usuário!
+                throw  HttpStatusException(HttpStatus.BAD_REQUEST, description)
+            }
+
+            //Agora vamos tratar o erro de segurança que criamos lá no servidor (quando enviamos CEP com fim 333
+            //Sabemos que esse erro retorna um objeto que descreve melhor o erro, teremos que pegar esse objeto!
+
+            //Verificando se o erro que aconteceu foi PERMISSION_DENIED (Verifificamos pelo CODE)
+            if (statusCode == Status.Code.PERMISSION_DENIED) {
+
+                //Verifico se no erro está vindo mais detalhes, como um objeto!
+                val statusProto = StatusProto.fromThrowable(e)
+
+                //Caso não tenha mais detalhes eu lanço um erro
+                if(statusProto == null){
+                    throw  HttpStatusException(HttpStatus.FORBIDDEN, description)
+                }
+
+                //Caso venha mais detalhes vou pegá-los:
+                //Temos que tipar com Any do protobuf e não do Kotlin!
+                //Estamos pegando o erro empacotado!
+                val anyDetails:Any = statusProto.detailsList.get(0)
+
+                //Desempacotando o erro para erroDetails
+                val erroDetails = anyDetails.unpack(ErrorDetails::class.java)
+
+                throw  HttpStatusException(HttpStatus.FORBIDDEN, "${erroDetails.code}: ${erroDetails.message}")
+            }
+
+            //Será o erro genérico que vamos lançar para o usuário...
+            throw HttpStatusException(HttpStatus.INTERNAL_SERVER_ERROR, e.message)
+        }
+    }
+}
